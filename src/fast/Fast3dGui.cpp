@@ -24,6 +24,10 @@
 #include "ship/port/mobile/MobileImpl.h"
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #ifdef ENABLE_OPENGL
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
@@ -72,6 +76,26 @@ void Fast3dGui::HandleWindowEvents(Fast::WindowEvent event) {
             ImGui_ImplSDL2_ProcessEvent(static_cast<const SDL_Event*>(event.Sdl.Event));
 #if defined(__ANDROID__) || defined(__IOS__)
             Ship::Mobile::ImGuiProcessEvent(ImGui::GetIO().WantTextInput);
+#elif defined(__EMSCRIPTEN__)
+            // Show/hide mobile keyboard via hidden input element
+            // (SDL_StartTextInput is not implemented in Emscripten's SDL2 port)
+            {
+                static bool sShowingKeyboard = false;
+                if (ImGui::GetIO().WantTextInput && !sShowingKeyboard) {
+                    sShowingKeyboard = true;
+                    EM_ASM({
+                        var inp = document.getElementById('mobile-keyboard-input');
+                        if (inp) { inp.focus(); inp.click(); }
+                    });
+                } else if (!ImGui::GetIO().WantTextInput && sShowingKeyboard) {
+                    sShowingKeyboard = false;
+                    EM_ASM({
+                        var inp = document.getElementById('mobile-keyboard-input');
+                        if (inp) { inp.blur(); }
+                        document.getElementById('canvas').focus();
+                    });
+                }
+            }
 #endif
             break;
 #ifdef ENABLE_DX11
