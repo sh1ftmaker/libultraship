@@ -3973,6 +3973,14 @@ bool gfx_othermode_h_handler_f3d(F3DGfx** cmd0) {
     return false;
 }
 
+// Lowest address treated as a real host pointer. Native builds never map the first 64KB; on
+// wasm32 static data starts at 1024, so only null is ruled out there.
+#ifdef __EMSCRIPTEN__
+static constexpr uintptr_t kMinHostPointer = 1;
+#else
+static constexpr uintptr_t kMinHostPointer = 0x10000;
+#endif
+
 // A resolved address still in the N64 segmented range (<= 0x0FFFFFFF) usually means SegAddr
 // failed to resolve it (segment not set up). Keep it only if it belongs to a loaded module,
 // where it's a real low pointer (e.g. a static TLUT) rather than an unresolved segment addr.
@@ -3980,6 +3988,12 @@ static bool IsValidResolvedAddress(uintptr_t addr) {
     if (addr > 0x0FFFFFFF) {
         return true;
     }
+
+#ifdef __EMSCRIPTEN__
+    // wasm32 linear memory starts at 0, so real heap and static pointers routinely sit in the
+    // N64 segmented range and there is no module table to tell them apart. Accept them all.
+    return addr != 0;
+#endif
 
     // Still in the N64 segmented range, but might be a false positive (a real low pointer).
 #ifdef _WIN32
@@ -4905,7 +4919,7 @@ static void gfx_step() {
         if (opcode == OTR_G_VTX_OTR_FILEPATH || opcode == OTR_G_SETTIMG_OTR_FILEPATH ||
             opcode == OTR_G_DL_OTR_FILEPATH || opcode == OTR_G_PUSHCD || opcode == OTR_G_MTX_OTR_FILEPATH) {
             uintptr_t w1 = (uintptr_t)cmd->words.w1;
-            if (w1 < 0x10000
+            if (w1 < kMinHostPointer
 #if UINTPTR_MAX > 0xFFFFFFFFu
                 // On 64-bit: filter kernel/sentinel addresses.
                 || w1 > 0x0000FFFFFFFFFFFFull
@@ -5348,7 +5362,7 @@ int32_t gfx_check_image_signature(const char* imgData) {
 
     // Filter addresses that are obviously not valid string pointers before
     // attempting to dereference for the "__OTR__" check.
-    if (i == 0 || i < 0x10000) {
+    if (i == 0 || i < kMinHostPointer) {
         return 0;
     }
 #if UINTPTR_MAX > 0xFFFFFFFFu
