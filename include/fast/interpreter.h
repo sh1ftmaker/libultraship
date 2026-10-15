@@ -541,9 +541,11 @@ class Interpreter {
     bool mPortrait = false;
     float mPortrait3DScaleX = 1.0f;
     float mPortrait3DScaleY = 1.0f;
-    float mPortrait3DShiftY = 0.0f;
+    float mPortraitShiftY = 0.0f;
     float mPortrait2DScaleY = 1.0f;
-    float mPortrait2DBottomY = -1.0f;
+    bool mPortraitBgThisFrame = false; // a prerendered background (S2DEX BG) was drawn
+    bool mPortraitBgLastFrame = false;
+    bool mDrawingPortraitBg = false; // inside an S2DEX BG draw
     bool mRendersToFb{}; // game_renders_to_framebuffer;
     std::map<int, FBInfo>::iterator mActiveFrameBuffer;
     std::map<int, FBInfo> mFrameBuffers;

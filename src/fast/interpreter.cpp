@@ -37,6 +37,7 @@
 #include "ship/utils/Utils.h"
 #include "ship/Context.h"
 #include "ship/config/ConsoleVariable.h"
+#include "libultraship/bridge/windowbridge.h"
 
 #include "libultraship/libultra/os.h"
 
@@ -1566,19 +1567,22 @@ float Interpreter::AdjXForAspectRatio(float x) const {
     }
 }
 
+static bool sPortraitFixedView = false;
+
 bool Interpreter::IsPortraitTarget() const {
     return mPortrait && !(mFbActive && mActiveFrameBuffer != mFrameBuffers.end() &&
                           (!mActiveFrameBuffer->second.resize || mActiveFrameBuffer->second.forceFixedAspect));
 }
 
 // A window narrower than 4:3 would otherwise keep the 4:3 vertical view and crop the sides, cutting off the
-// HUD and showing a narrow slice of the world. Instead:
-//  - 3D (perspective) widens toward the full 4:3 width by PortraitZoomOut (0 = crop as before, 100 = whole
-//    4:3 width plus more above and below), centered on the part of the screen not covered by touch controls
-//    (PortraitBottomInset, per mille of the height from the bottom).
-//  - 2D (orthographic: HUD, text) uses a full-width 4:3 box. Pieces in its upper half are pinned to the top of
-//    the screen and pieces in its lower half sit on the inset line; full-height pieces (fades, backgrounds)
-//    still cover the whole screen. See GfxSpTri1.
+// HUD and showing a narrow slice of the world. Instead, a full-width 4:3 box is centered on the part of the
+// screen not covered by touch controls (PortraitBottomInset, per mille of the height from the bottom):
+//  - 2D (orthographic: HUD, text, logos, prerendered backgrounds) is drawn undistorted in that box, except
+//    untextured full-height fills (fades, clears), which still cover the whole screen. See GfxSpTri1.
+//  - 3D (perspective) widens toward the box's full width by PortraitZoomOut (0 = crop as before, 100 = whole
+//    4:3 width plus more above and below). In scenes with a prerendered background (S2DEX BG) or a fixed
+//    view the game reports (WindowSetPortraitFixedView, e.g. panoramic rooms drawn as a skybox) it matches
+//    the box exactly and drawing is clipped to it, as there is nothing modelled outside.
 void Interpreter::UpdatePortraitParameters() {
     const float aspect = (float)mCurDimensions.width / (float)mCurDimensions.height;
     mPortrait = aspect < 4.0f / 3.0f;
@@ -1595,9 +1599,9 @@ void Interpreter::UpdatePortraitParameters() {
     const float cropScaleX = (4.0f / 3.0f) / aspect;
     mPortrait3DScaleX = cropScaleX + (1.0f - cropScaleX) * zoom;
     mPortrait3DScaleY = mPortrait3DScaleX * boxScale;
-    mPortrait3DShiftY = inset; // center of the visible part [-1 + 2 * inset, 1]
     mPortrait2DScaleY = boxScale;
-    mPortrait2DBottomY = -1.0f + 2.0f * inset;
+    // Center of the visible part [-1 + 2 * inset, 1], keeping the box's top on screen
+    mPortraitShiftY = std::min(inset, 1.0f - boxScale);
 }
 
 // Scale the width and height value based on the ratio of the viewport to the native size
@@ -1643,8 +1647,9 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
 
         x = AdjXForAspectRatio(x);
         if (w != 1.0f && IsPortraitTarget()) { // perspective; see UpdatePortraitParameters()
-            x *= mPortrait3DScaleX;
-            y = y * mPortrait3DScaleY + mPortrait3DShiftY * w;
+            const bool prerendered = mPortraitBgThisFrame || mPortraitBgLastFrame || sPortraitFixedView;
+            x *= prerendered ? 1.0f : mPortrait3DScaleX;
+            y = y * (prerendered ? mPortrait2DScaleY : mPortrait3DScaleY) + mPortraitShiftY * w;
         }
 
         short U = v->tc[0] * mRsp->texture_scaling_factor.s >> 16;
@@ -2139,16 +2144,16 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
 
     struct GfxClipParameters clip_parameters = mRapi->GetClipParameters();
 
-    // Portrait: place orthographic (2D) triangles, see UpdatePortraitParameters()
+    // Portrait: place orthographic (2D) triangles in the 4:3 box, see UpdatePortraitParameters()
     float ys[3] = { v_arr[0]->y, v_arr[1]->y, v_arr[2]->y };
     if (v_arr[0]->w == 1.0f && v_arr[1]->w == 1.0f && v_arr[2]->w == 1.0f && IsPortraitTarget()) {
         const float yMin = std::min({ ys[0], ys[1], ys[2] });
         const float yMax = std::max({ ys[0], ys[1], ys[2] });
-        if (yMax - yMin < 1.5f) {
-            const float s = mPortrait2DScaleY;
-            const float shift = (ys[0] + ys[1] + ys[2]) >= 0.0f ? 1.0f - s : mPortrait2DBottomY + s;
+        // Prerendered backgrounds draw in copy mode, which reports no textures, so check for them explicitly
+        const bool fullScreenFill = !usedTextures[0] && !usedTextures[1] && !mDrawingPortraitBg && yMax - yMin > 1.9f;
+        if (!fullScreenFill) {
             for (float& y : ys) {
-                y = y * s + shift;
+                y = y * mPortrait2DScaleY + mPortraitShiftY;
             }
         }
     }
@@ -2512,6 +2517,15 @@ void Interpreter::GfxDpSetScissor(uint32_t mode, uint32_t ulx, uint32_t uly, uin
     mRdp->scissor.y = y;
     mRdp->scissor.width = width;
     mRdp->scissor.height = height;
+
+    // Portrait scenes with a prerendered background: keep drawing inside the 4:3 box the background fills,
+    // so 3D that is normally off-screen doesn't show above or below it. See UpdatePortraitParameters().
+    if (IsPortraitTarget() && (mPortraitBgThisFrame || mPortraitBgLastFrame || sPortraitFixedView)) {
+        const float nativeHeight = mNativeDimensions.height;
+        const float boxCenter = (1.0f - mPortraitShiftY) / 2.0f * nativeHeight; // from the top, native units
+        mRdp->scissor.y = boxCenter + (y - nativeHeight / 2.0f) * mPortrait2DScaleY;
+        mRdp->scissor.height = height * mPortrait2DScaleY;
+    }
 
     AdjustVIewportOrScissor(&mRdp->scissor);
 
@@ -3159,6 +3173,8 @@ void Interpreter::GfxDpSetOtherMode(uint32_t h, uint32_t l) {
 }
 
 void Interpreter::Gfxs2dexBgCopy(F3DuObjBg* bg) {
+    mPortraitBgThisFrame = true;
+    mDrawingPortraitBg = true;
     /*
     bg->b.imageX = 0;
     bg->b.imageW = width * 4;
@@ -3208,9 +3224,12 @@ void Interpreter::Gfxs2dexBgCopy(F3DuObjBg* bg) {
     GfxDpSetTileSize(G_TX_RENDERTILE, 0, 0, bg->b.imageW, bg->b.imageH);
     GfxDpTextureRectangle(bg->b.frameX, bg->b.frameY, bg->b.frameX + bg->b.imageW - 4, bg->b.frameY + bg->b.imageH - 4,
                           G_TX_RENDERTILE, uls, bg->b.imageY << 3, dsdx, 1 << 10, false);
+    mDrawingPortraitBg = false;
 }
 
 void Interpreter::Gfxs2dexBg1cyc(F3DuObjBg* bg) {
+    mPortraitBgThisFrame = true;
+    mDrawingPortraitBg = true;
     uintptr_t data = (uintptr_t)bg->b.imagePtr;
 
     uint32_t texFlags = 0;
@@ -3251,6 +3270,7 @@ void Interpreter::Gfxs2dexBg1cyc(F3DuObjBg* bg) {
 
     GfxDpTextureRectangle(bg->b.frameX, bg->b.frameY, bg->b.frameW, bg->b.frameH, G_TX_RENDERTILE, ulsRect,
                           bg->b.imageY << 3, dsdxRect, 1 << 10, false);
+    mDrawingPortraitBg = false;
 }
 
 void Interpreter::Gfxs2dexRecyCopy(F3DuObjSprite* spr) {
@@ -5128,6 +5148,9 @@ void Interpreter::StartFrame() {
         mCurDimensions.height = 1;
     }
     mCurDimensions.aspect_ratio = (float)mCurDimensions.width / (float)mCurDimensions.height;
+    mPortraitBgLastFrame = mPortraitBgThisFrame;
+    mPortraitBgThisFrame = false;
+    mDrawingPortraitBg = false;
     UpdatePortraitParameters();
 
     // Update the framebuffer sizes when the viewport or native dimension changes
@@ -5585,4 +5608,8 @@ extern "C" void gfx_register_fb_texture(const void* cpuAddr, int fbId) {
 
 extern "C" void gfx_unregister_fb_texture(const void* cpuAddr) {
     Fast::mInstance.lock().get()->UnregisterFbTexture(cpuAddr);
+}
+
+extern "C" void WindowSetPortraitFixedView(bool fixed) {
+    Fast::sPortraitFixedView = fixed;
 }

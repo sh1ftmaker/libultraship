@@ -28,6 +28,13 @@ API_EXPORT int32_t WindowGetPosY();
 /** @brief Returns true if the game window is currently in fullscreen mode. */
 API_EXPORT bool WindowIsFullscreen();
 
+/**
+ * @brief Tells the renderer the current view is fixed to a prerendered or panoramic background (e.g. fixed or
+ * pivoting cameras). In portrait windows such views are drawn at exactly 4:3 instead of being widened, since
+ * there is nothing outside the background to show.
+ */
+API_EXPORT void WindowSetPortraitFixedView(bool fixed);
+
 #ifdef __cplusplus
 };
 #endif
