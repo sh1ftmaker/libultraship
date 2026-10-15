@@ -327,6 +327,10 @@ void Fast3dGui::DrawFloatingWindows() {
     }
 }
 
+static bool IsPortrait(ImVec2 size) {
+    return size.x * 3.0f < size.y * 4.0f;
+}
+
 // A vertical resolution (e.g. 240 lines) for a window narrower than 4:3: the renderer lays the game out in a
 // full-width 4:3 box there (see Interpreter::UpdatePortraitParameters), so give that box the lines rather than
 // the whole window height, which would leave very few columns.
@@ -367,6 +371,14 @@ void Fast3dGui::CalculateGameViewport() {
     const int lowResMode = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_LOW_RES_MODE, 0);
     switch (lowResMode) {
         case 1: { // N64 Mode
+            if (IsPortrait(size)) {
+                // 4:3 at 240 lines would be cropped to a sliver of a tall window; the renderer fits a 4:3 box to
+                // the width there instead, so render that at 240 lines like 240p Widescreen.
+                const float vertRes = PortraitAdjustedLines(240, size);
+                interpreter->mCurDimensions.width = vertRes * size.x / size.y;
+                interpreter->mCurDimensions.height = vertRes;
+                break;
+            }
             interpreter->mCurDimensions.width = 320;
             interpreter->mCurDimensions.height = 240;
             /*
@@ -406,8 +418,10 @@ void Fast3dGui::DrawGame() {
     ImVec2 pos = ImVec2(0, 0);
     const auto interpreter = mInterpreter.lock().get();
 
-    if (Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_LOW_RES_MODE, 0) ==
-        1) { // N64 Mode takes priority
+    if (IsPortrait(size)) {
+        // Fill the window; see CalculateGameViewport and ApplyResolutionChanges
+    } else if (Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_LOW_RES_MODE, 0) ==
+               1) { // N64 Mode takes priority
         const float sw = size.y * 320.0f / 240.0f;
         pos = ImVec2(floor(size.x / 2 - sw / 2), 0);
         size = ImVec2(sw, size.y);
@@ -473,7 +487,9 @@ void Fast3dGui::ApplyResolutionChanges() {
     const bool verticalResolutionToggle = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
         CVAR_PREFIX_ADVANCED_RESOLUTION ".VerticalResolutionToggle", 0);
 
-    const bool aspectRatioIsEnabled = (aspectRatioX > 0.0f) && (aspectRatioY > 0.0f);
+    // A forced aspect ratio would letterbox a portrait window down to a strip; the renderer handles portrait
+    // layout itself (see Interpreter::UpdatePortraitParameters), so use the whole window there.
+    const bool aspectRatioIsEnabled = (aspectRatioX > 0.0f) && (aspectRatioY > 0.0f) && !IsPortrait(size);
 
     constexpr uint32_t minResolutionWidth = 320;
     constexpr uint32_t minResolutionHeight = 240;
