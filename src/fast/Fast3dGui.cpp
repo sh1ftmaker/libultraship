@@ -327,6 +327,14 @@ void Fast3dGui::DrawFloatingWindows() {
     }
 }
 
+// A vertical resolution (e.g. 240 lines) for a window narrower than 4:3: the renderer lays the game out in a
+// full-width 4:3 box there (see Interpreter::UpdatePortraitParameters), so give that box the lines rather than
+// the whole window height, which would leave very few columns.
+static float PortraitAdjustedLines(float lines, ImVec2 size) {
+    const float boxHeight = size.x * 3.0f / 4.0f;
+    return (size.y > boxHeight && boxHeight > 0) ? lines * size.y / boxHeight : lines;
+}
+
 void Fast3dGui::CalculateGameViewport() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -356,7 +364,8 @@ void Fast3dGui::CalculateGameViewport() {
         ApplyResolutionChanges();
     }
 
-    switch (Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_LOW_RES_MODE, 0)) {
+    const int lowResMode = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_LOW_RES_MODE, 0);
+    switch (lowResMode) {
         case 1: { // N64 Mode
             interpreter->mCurDimensions.width = 320;
             interpreter->mCurDimensions.height = 240;
@@ -366,14 +375,9 @@ void Fast3dGui::CalculateGameViewport() {
             mInterpreter.lock()->mGameWindowViewport.width = sw;*/
             break;
         }
-        case 2: { // 240p Widescreen
-            constexpr int vertRes = 240;
-            interpreter->mCurDimensions.width = vertRes * size.x / size.y;
-            interpreter->mCurDimensions.height = vertRes;
-            break;
-        }
+        case 2:   // 240p Widescreen
         case 3: { // 480p Widescreen
-            constexpr int vertRes = 480;
+            const float vertRes = PortraitAdjustedLines(lowResMode == 2 ? 240 : 480, size);
             interpreter->mCurDimensions.width = vertRes * size.x / size.y;
             interpreter->mCurDimensions.height = vertRes;
             break;
@@ -483,10 +487,11 @@ void Fast3dGui::ApplyResolutionChanges() {
     if (verticalResolutionToggle) { // Use fixed vertical resolution
         if (aspectRatioIsEnabled) {
             newWidth = uint32_t(float(verticalPixelCount / aspectRatioY) * aspectRatioX);
+            newHeight = verticalPixelCount;
         } else {
-            newWidth = uint32_t(float(verticalPixelCount * size.x / size.y));
+            newHeight = (uint32_t)PortraitAdjustedLines(verticalPixelCount, size);
+            newWidth = uint32_t(float(newHeight * size.x / size.y));
         }
-        newHeight = verticalPixelCount;
     } else { // Use the window's resolution
         if (aspectRatioIsEnabled) {
             if (((float)interpreter->mGameWindowViewport.height / interpreter->mGameWindowViewport.width) <
