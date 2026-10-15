@@ -440,6 +440,16 @@ void Fast3dGui::DrawGame() {
     }
     uintptr_t fb = Ship::Context::GetRawInstance()->GetWindow()->GetGfxFrameBuffer();
     if (fb) {
+        // The game window is sized in framebuffer pixels (Gui::DrawMenu uses the window's drawable size), but
+        // ImGui draws in display units. Where those differ (browsers with devicePixelRatio > 1), convert, or
+        // the image comes out scaled up by that ratio and only its top-left part is visible.
+        const ImGuiIO& io = ImGui::GetIO();
+        const float windowWidth = Ship::Context::GetRawInstance()->GetWindow()->GetWidth();
+        const float pixelsPerUnit = io.DisplaySize.x > 0 ? windowWidth / io.DisplaySize.x : 1.0f;
+        if (pixelsPerUnit > 1.0f) {
+            pos = ImVec2(pos.x / pixelsPerUnit, pos.y / pixelsPerUnit);
+            size = ImVec2(size.x / pixelsPerUnit, size.y / pixelsPerUnit);
+        }
         ImGui::SetCursorPos(pos);
         ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
     }
