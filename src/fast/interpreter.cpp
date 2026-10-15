@@ -1558,9 +1558,46 @@ float Interpreter::AdjXForAspectRatio(float x) const {
     if (mFbActive && mActiveFrameBuffer != mFrameBuffers.end() &&
         (!mActiveFrameBuffer->second.resize || mActiveFrameBuffer->second.forceFixedAspect)) {
         return x;
+    } else if (mPortrait) {
+        // Portrait: 2D keeps the full 4:3 width; 3D vertices get mPortrait3DScaleX in GfxSpVertex
+        return x;
     } else {
         return x * (4.0f / 3.0f) / ((float)mCurDimensions.width / (float)mCurDimensions.height);
     }
+}
+
+bool Interpreter::IsPortraitTarget() const {
+    return mPortrait && !(mFbActive && mActiveFrameBuffer != mFrameBuffers.end() &&
+                          (!mActiveFrameBuffer->second.resize || mActiveFrameBuffer->second.forceFixedAspect));
+}
+
+// A window narrower than 4:3 would otherwise keep the 4:3 vertical view and crop the sides, cutting off the
+// HUD and showing a narrow slice of the world. Instead:
+//  - 3D (perspective) widens toward the full 4:3 width by PortraitZoomOut (0 = crop as before, 100 = whole
+//    4:3 width plus more above and below), centered on the part of the screen not covered by touch controls
+//    (PortraitBottomInset, per mille of the height from the bottom).
+//  - 2D (orthographic: HUD, text) uses a full-width 4:3 box. Pieces in its upper half are pinned to the top of
+//    the screen and pieces in its lower half sit on the inset line; full-height pieces (fades, backgrounds)
+//    still cover the whole screen. See GfxSpTri1.
+void Interpreter::UpdatePortraitParameters() {
+    const float aspect = (float)mCurDimensions.width / (float)mCurDimensions.height;
+    mPortrait = aspect < 4.0f / 3.0f;
+    if (!mPortrait) {
+        return;
+    }
+    auto cvars = Ship::Context::GetRawInstance()->GetConsoleVariables();
+    const float zoom =
+        std::clamp(cvars->GetInteger(CVAR_PREFIX_ADVANCED_RESOLUTION ".PortraitZoomOut", 60), 0, 100) / 100.0f;
+    const float inset =
+        std::clamp(cvars->GetInteger(CVAR_PREFIX_ADVANCED_RESOLUTION ".PortraitBottomInset", 0), 0, 600) / 1000.0f;
+    const float boxScale = aspect / (4.0f / 3.0f); // height of the full-width 4:3 box, in NDC units of the screen
+
+    const float cropScaleX = (4.0f / 3.0f) / aspect;
+    mPortrait3DScaleX = cropScaleX + (1.0f - cropScaleX) * zoom;
+    mPortrait3DScaleY = mPortrait3DScaleX * boxScale;
+    mPortrait3DShiftY = inset; // center of the visible part [-1 + 2 * inset, 1]
+    mPortrait2DScaleY = boxScale;
+    mPortrait2DBottomY = -1.0f + 2.0f * inset;
 }
 
 // Scale the width and height value based on the ratio of the viewport to the native size
@@ -1605,6 +1642,10 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
         }
 
         x = AdjXForAspectRatio(x);
+        if (w != 1.0f && IsPortraitTarget()) { // perspective; see UpdatePortraitParameters()
+            x *= mPortrait3DScaleX;
+            y = y * mPortrait3DScaleY + mPortrait3DShiftY * w;
+        }
 
         short U = v->tc[0] * mRsp->texture_scaling_factor.s >> 16;
         short V = v->tc[1] * mRsp->texture_scaling_factor.t >> 16;
@@ -2098,6 +2139,20 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
 
     struct GfxClipParameters clip_parameters = mRapi->GetClipParameters();
 
+    // Portrait: place orthographic (2D) triangles, see UpdatePortraitParameters()
+    float ys[3] = { v_arr[0]->y, v_arr[1]->y, v_arr[2]->y };
+    if (v_arr[0]->w == 1.0f && v_arr[1]->w == 1.0f && v_arr[2]->w == 1.0f && IsPortraitTarget()) {
+        const float yMin = std::min({ ys[0], ys[1], ys[2] });
+        const float yMax = std::max({ ys[0], ys[1], ys[2] });
+        if (yMax - yMin < 1.5f) {
+            const float s = mPortrait2DScaleY;
+            const float shift = (ys[0] + ys[1] + ys[2]) >= 0.0f ? 1.0f - s : mPortrait2DBottomY + s;
+            for (float& y : ys) {
+                y = y * s + shift;
+            }
+        }
+    }
+
     for (int i = 0; i < 3; i++) {
         float z = v_arr[i]->z, w = v_arr[i]->w;
         if (clip_parameters.z_is_from_0_to_1) {
@@ -2105,7 +2160,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         }
 
         mBufVbo[mBufVboLen++] = v_arr[i]->x;
-        mBufVbo[mBufVboLen++] = clip_parameters.invertY ? -v_arr[i]->y : v_arr[i]->y;
+        mBufVbo[mBufVboLen++] = clip_parameters.invertY ? -ys[i] : ys[i];
         mBufVbo[mBufVboLen++] = z;
         mBufVbo[mBufVboLen++] = w;
 
@@ -5073,6 +5128,7 @@ void Interpreter::StartFrame() {
         mCurDimensions.height = 1;
     }
     mCurDimensions.aspect_ratio = (float)mCurDimensions.width / (float)mCurDimensions.height;
+    UpdatePortraitParameters();
 
     // Update the framebuffer sizes when the viewport or native dimension changes
     if (mCurDimensions.width != mPrvDimensions.width || mCurDimensions.height != mPrvDimensions.height ||

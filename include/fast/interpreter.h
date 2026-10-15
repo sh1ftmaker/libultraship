@@ -488,6 +488,8 @@ class Interpreter {
     void AdjustWidthHeightForScale(uint32_t& width, uint32_t& height, uint32_t nativeWidth,
                                    uint32_t nativeHeight) const;
     float AdjXForAspectRatio(float x) const;
+    bool IsPortraitTarget() const;
+    void UpdatePortraitParameters();
     void AdjustVIewportOrScissor(XYWidthHeight* area);
     void CalcAndSetViewport(const F3DVp_t* viewport);
 
@@ -535,6 +537,13 @@ class Interpreter {
     uintptr_t mSegmentPointers[MAX_SEGMENT_POINTERS]{};
 
     bool mFbActive{};
+    // Portrait windows (narrower than 4:3), see UpdatePortraitParameters()
+    bool mPortrait = false;
+    float mPortrait3DScaleX = 1.0f;
+    float mPortrait3DScaleY = 1.0f;
+    float mPortrait3DShiftY = 0.0f;
+    float mPortrait2DScaleY = 1.0f;
+    float mPortrait2DBottomY = -1.0f;
     bool mRendersToFb{}; // game_renders_to_framebuffer;
     std::map<int, FBInfo>::iterator mActiveFrameBuffer;
     std::map<int, FBInfo> mFrameBuffers;
